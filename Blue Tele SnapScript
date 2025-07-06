@@ -38,35 +38,107 @@ from collections import defaultdict
 # cv2.contourArea = track_opencv('contourArea')(cv2.contourArea)
 
 # Constants for filtering contours
-SMALL_CONTOUR_AREA = 3000
+SMALL_CONTOUR_AREA = 1000
 
 # Minimum average brightness threshold (0-255)
-MIN_BRIGHTNESS_THRESHOLD = 25
+MIN_BRIGHTNESS_THRESHOLD = 0
 
-# Color detection ranges for blue in HSV
-HSV_BLUE_RANGE = ([50, 100, 0], [210, 255, 255])
+# Color detection ranges for yellow in HSV
+HSV_YELLOW_RANGE = ([25, 230, 20], [205, 255, 245])
 
 # Edge detection parameters - initial values
 BLUR_SIZE = 17
 SOBEL_KERNEL = 3
 
 # Aspect ratio range for contour filtering
-MIN_ASPECT_RATIO = 0  # Minimum width/height ratio
-MAX_ASPECT_RATIO = 5.0  # Maximum width/height ratio
+MIN_ASPECT_RATIO =0  # Minimum width/height ratio
+MAX_ASPECT_RATIO = 6.0  # Maximum width/height ratio
 
+# Vertical position threshold (in pixels from bottom)
+VERTICAL_THRESHOLD = 800  # Adjust this value as needed
+h_c = 18
+def get_distance_from_vertical_pixel(x_pix, h_c, vFoV=42.0, theta=45.0, R=480):
+    """
+    Calculates the ground distance (y) from the camera to a point that appears
+    at vertical pixel position x_pix.
+
+    Parameters:
+    - x_pix (float): vertical pixel position (0 = top, R = bottom)
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees (default: 42.0)
+    - theta (float): camera tilt angle downward from horizontal (in degrees)
+    - R (int): vertical resolution in pixels (default: 480)
+
+    Returns:
+    - y (float): distance from camera to point on ground in meters
+    """
+    # Compute vertical angle offset from the optical axis
+    angle_offset = ((x_pix - R / 2) / R) * vFoV
+
+    # Total angle from horizontal to pixel ray
+    total_angle_deg = theta + angle_offset
+
+    # Convert to radians and calculate distance
+    total_angle_rad = math.radians(total_angle_deg)
+    y = h_c / math.tan(total_angle_rad)
+
+    return y
+
+
+def get_horizontal_displacement(x_pix_horizontal, y, hFoV=54.5, W=640):
+    """
+    Calculate horizontal ground displacement (X) from camera center line.
+
+    Parameters:
+    - x_pix_horizontal (float): horizontal pixel position (0 = left, W = right)
+    - y (float): distance along ground straight ahead (from vertical calculation)
+    - hFoV (float): horizontal field of view in degrees (default 54.5)
+    - W (int): horizontal resolution in pixels (default 640)
+
+    Returns:
+    - X (float): horizontal displacement on ground in meters
+    """
+    angle_offset_deg = ((x_pix_horizontal - W / 2) / W) * hFoV
+    angle_offset_rad = math.radians(angle_offset_deg)
+
+    X = y * math.tan(angle_offset_rad)
+    return X
+
+
+def get_ground_coordinates(x_pix_vertical, x_pix_horizontal, h_c=h_c, vFoV=42.0, theta=45.0, R=480, hFoV=54.5, W=640):
+    """
+    Calculate the 2D ground coordinates (X, Y) from pixel coordinates.
+
+    Parameters:
+    - x_pix_vertical (float): vertical pixel coordinate
+    - x_pix_horizontal (float): horizontal pixel coordinate
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees
+    - theta (float): camera tilt angle downward from horizontal in degrees
+    - R (int): vertical resolution in pixels
+    - hFoV (float): horizontal field of view in degrees
+    - W (int): horizontal resolution in pixels
+
+    Returns:
+    - (X, Y): tuple of floats representing ground coordinates in meters
+    """
+    y = get_distance_from_vertical_pixel(x_pix_vertical, h_c, vFoV, theta, R)
+    X = get_horizontal_displacement(x_pix_horizontal, y, hFoV, W)
+    new_center = (X, y)
+    return new_center
 def calculate_angle(contour):
     if len(contour) < 5:
         return 0
     (x, y), (MA, ma), angle = cv2.fitEllipse(contour)
     return angle
 
-def draw_info(image, color, angle, center, index, area):
-    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-    cv2.putText(image, f"Area: {area:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-    cv2.circle(image, center, 5, (255, 0, 0), -1)
+def draw_info(image, color, angle, center, centerx, centery, index, area):
+    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"Center: {centerx:.2f} {centery:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.circle(image, center, 5, (0, 255, 0), -1)
     cv2.line(image, center, (int(center[0] + 50 * math.cos(math.radians(90 - angle))), 
-                             int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (255, 0, 0), 2)
+                             int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (0, 255, 0), 2)
 
 def separate_touching_contours(contour, min_area_ratio=2):
     x, y, w, h = cv2.boundingRect(contour)
@@ -80,7 +152,7 @@ def separate_touching_contours(contour, min_area_ratio=2):
 
     dist_transform = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
 
-    for threshold in np.linspace(0.1, 0.9, 9):
+    for threshold in np.linspace(.10, 0.9, 9):
         _, thresh = cv2.threshold(dist_transform, threshold * dist_transform.max(), 255, 0)
         thresh = np.uint8(thresh)
 
@@ -153,22 +225,22 @@ def runPipeline(frame, llrobot):
         hsv_denoised = cv2.GaussianBlur(hsv, (5, 5), 0)
         #cv2.imshow('2. HSV Denoised', hsv_denoised)
         hsv_denoised = hsv
-        # Create mask for blue
-        blue_mask = cv2.inRange(hsv_denoised, np.array(HSV_BLUE_RANGE[0]), np.array(HSV_BLUE_RANGE[1]))
-        blue_mask = cv2.erode(blue_mask, np.ones((3, 3), np.uint8))
+        # Create mask for yellow
+        yellow_mask = cv2.inRange(hsv_denoised, np.array(HSV_YELLOW_RANGE[0]), np.array(HSV_YELLOW_RANGE[1]))
+        yellow_mask = cv2.erode(yellow_mask, np.ones((3, 3), np.uint8))
 
-        #cv2.imshow('3. Blue Mask', blue_mask)
-        #return debug_return(blue_mask)
-        # Process blue color
-        blue_contours, blue_hierarchy, blue_gray, isDebug, debug_info = process_color(frame, blue_mask)
+        #cv2.imshow('3. Yellow Mask', yellow_mask)
+        #return debug_return(yellow_mask)
+        # Process yellow color
+        yellow_contours, yellow_hierarchy, yellow_gray, isDebug, debug_info = process_color(frame, yellow_mask)
         if isDebug:
             return debug_return(debug_info)
 
         # Create a copy for contour visualization
         contour_frame = frame.copy()
         valid_contours = []
-        #cv2.drawContours(frame, blue_contours, -1, (255, 0, 0), 2)
-        for i, contour in enumerate(blue_contours):
+        #cv2.drawContours(frame, yellow_contours, -1, (0, 255, 0), 2)
+        for i, contour in enumerate(yellow_contours):
             if cv2.contourArea(contour) < SMALL_CONTOUR_AREA:
                 continue
 
@@ -184,11 +256,11 @@ def runPipeline(frame, llrobot):
                 continue
 
             for sep_contour in separate_touching_contours(contour):
-                mask = np.zeros(blue_gray.shape, dtype=np.uint8)
+                mask = np.zeros(yellow_gray.shape, dtype=np.uint8)
                 cv2.drawContours(mask, [sep_contour], -1, 255, -1)
                 #cv2.imshow('14. Contour Mask', mask)
 
-                if cv2.mean(blue_gray, mask=mask)[0] > MIN_BRIGHTNESS_THRESHOLD:
+                if cv2.mean(yellow_gray, mask=mask)[0] < MIN_BRIGHTNESS_THRESHOLD:
                     continue
 
                 M = cv2.moments(sep_contour)
@@ -196,11 +268,13 @@ def runPipeline(frame, llrobot):
                     continue
 
                 center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                
+                # Skip if contour is below vertical threshold
+                if center[1] < frame.shape[0] - VERTICAL_THRESHOLD:
+                    continue
+                    
                 angle = calculate_angle(sep_contour)
                 area = cv2.contourArea(sep_contour)
-                if area > 80000 :
-                    continue
-
                 # Store valid contour info
                 valid_contours.append({
                     'contour': sep_contour,
@@ -209,29 +283,39 @@ def runPipeline(frame, llrobot):
                     'area': area,
                     'index': i
                 })
-                tx = (center[0])/78 - 4.5
-                ty = ((center[1] / 1.5)/78 - 3)
-                total = abs(tx) + abs(ty)
-                oldtx = (llpython[1])/78 - 4.5
-                oldty = ((llpython[2] / 1.5)/78 - 3)
-                oldtotal = abs(oldtx) + abs(oldty)
+                
                 
 
                 # Update llpython and largest_contour if this is the largest valid contour
-                if total < oldtotal :
-                    largest_area = area
-                    largest_contour = sep_contour
-                    llpython = [1, center[0], center[1], angle, len(blue_contours), area, 0, 0]
-
+            
         # Draw all valid contours and their info
+        newpython = []
         for contour_info in valid_contours:
-            cv2.drawContours(frame, [contour_info['contour']], -1, (255, 0, 0), 2)
-            draw_info(frame, "Blue", contour_info['angle'], contour_info['center'], 
+            place = 0
+            newercenter = get_ground_coordinates(contour_info['center'][1],contour_info['center'][0])
+            thingy = [newercenter[0],  newercenter[1], contour_info['angle']]
+            try:
+                for i in newpython:
+                    if abs(i[0]) < abs(newercenter[0]):
+                        place += 1
+                    else:
+                        break
+                newpython.insert(int(place), thingy)
+            except Exception as e:
+                newpython.insert(int(place), thingy)
+
+            cv2.drawContours(frame, [contour_info['contour']], -1, (0, 255, 0), 2)
+            draw_info(frame, "Blue", contour_info['angle'], contour_info['center'], newercenter[0], newercenter[1], 
                      contour_info['index'] + 1, contour_info['area'])
 
         #cv2.imshow('15. Contours', contour_frame)
         #cv2.imshow('16. Final Output', frame)
-        return largest_contour, frame, llpython
+        newerpython = []
+        for i in newpython:
+            newerpython.append(i[0])
+            newerpython.append(i[1])
+            newerpython.append(i[2])
+        return largest_contour, frame, newerpython
 
     except Exception as e:
         print(f"Error: {str(e)}")
