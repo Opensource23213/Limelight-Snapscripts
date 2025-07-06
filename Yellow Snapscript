@@ -38,13 +38,13 @@ from collections import defaultdict
 # cv2.contourArea = track_opencv('contourArea')(cv2.contourArea)
 
 # Constants for filtering contours
-SMALL_CONTOUR_AREA = 3000
+SMALL_CONTOUR_AREA = 400
 
 # Minimum average brightness threshold (0-255)
 MIN_BRIGHTNESS_THRESHOLD = 0
 
 # Color detection ranges for yellow in HSV
-HSV_YELLOW_RANGE = ([30, 60, 100], [80, 255, 255])
+HSV_YELLOW_RANGE = ([10, 50, 80], [200, 255, 255])
 
 # Edge detection parameters - initial values
 BLUR_SIZE = 17
@@ -56,17 +56,86 @@ MAX_ASPECT_RATIO = 4.0  # Maximum width/height ratio
 
 # Vertical position threshold (in pixels from bottom)
 VERTICAL_THRESHOLD = 800  # Adjust this value as needed
+h_c = 12
+def get_distance_from_vertical_pixel(x_pix, h_c, vFoV=42.0, theta=45.0, R=480):
+    """
+    Calculates the ground distance (y) from the camera to a point that appears
+    at vertical pixel position x_pix.
 
+    Parameters:
+    - x_pix (float): vertical pixel position (0 = top, R = bottom)
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees (default: 42.0)
+    - theta (float): camera tilt angle downward from horizontal (in degrees)
+    - R (int): vertical resolution in pixels (default: 480)
+
+    Returns:
+    - y (float): distance from camera to point on ground in meters
+    """
+    # Compute vertical angle offset from the optical axis
+    angle_offset = ((x_pix - R / 2) / R) * vFoV
+
+    # Total angle from horizontal to pixel ray
+    total_angle_deg = theta + angle_offset
+
+    # Convert to radians and calculate distance
+    total_angle_rad = math.radians(total_angle_deg)
+    y = h_c / math.tan(total_angle_rad)
+
+    return y
+
+
+def get_horizontal_displacement(x_pix_horizontal, y, hFoV=54.5, W=640):
+    """
+    Calculate horizontal ground displacement (X) from camera center line.
+
+    Parameters:
+    - x_pix_horizontal (float): horizontal pixel position (0 = left, W = right)
+    - y (float): distance along ground straight ahead (from vertical calculation)
+    - hFoV (float): horizontal field of view in degrees (default 54.5)
+    - W (int): horizontal resolution in pixels (default 640)
+
+    Returns:
+    - X (float): horizontal displacement on ground in meters
+    """
+    angle_offset_deg = ((x_pix_horizontal - W / 2) / W) * hFoV
+    angle_offset_rad = math.radians(angle_offset_deg)
+
+    X = y * math.tan(angle_offset_rad)
+    return X
+
+
+def get_ground_coordinates(x_pix_vertical, x_pix_horizontal, h_c=h_c, vFoV=42.0, theta=45.0, R=480, hFoV=54.5, W=640):
+    """
+    Calculate the 2D ground coordinates (X, Y) from pixel coordinates.
+
+    Parameters:
+    - x_pix_vertical (float): vertical pixel coordinate
+    - x_pix_horizontal (float): horizontal pixel coordinate
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees
+    - theta (float): camera tilt angle downward from vertical in degrees
+    - R (int): vertical resolution in pixels
+    - hFoV (float): horizontal field of view in degrees
+    - W (int): horizontal resolution in pixels
+
+    Returns:
+    - (X, Y): tuple of floats representing ground coordinates in meters
+    """
+    y = get_distance_from_vertical_pixel(x_pix_vertical, h_c, vFoV, theta, R)
+    X = get_horizontal_displacement(x_pix_horizontal, y, hFoV, W)
+    new_center = (X, y)
+    return new_center
 def calculate_angle(contour):
     if len(contour) < 5:
         return 0
     (x, y), (MA, ma), angle = cv2.fitEllipse(contour)
     return angle
 
-def draw_info(image, color, angle, center, index, area):
+def draw_info(image, color, angle, center, centerx, centery, index, area):
     cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    cv2.putText(image, f"Area: {area:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"Center: {centerx:.2f} {centery:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     cv2.circle(image, center, 5, (0, 255, 0), -1)
     cv2.line(image, center, (int(center[0] + 50 * math.cos(math.radians(90 - angle))), 
                              int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (0, 255, 0), 2)
@@ -206,7 +275,6 @@ def runPipeline(frame, llrobot):
                     
                 angle = calculate_angle(sep_contour)
                 area = cv2.contourArea(sep_contour)
-            
                 # Store valid contour info
                 valid_contours.append({
                     'contour': sep_contour,
@@ -215,30 +283,39 @@ def runPipeline(frame, llrobot):
                     'area': area,
                     'index': i
                 })
-                tx = (center[0])/78 - 4.5
-                ty = ((center[1])/78 - 3.3) * 1.5
-                total = abs(tx) + abs(ty)
-                oldtx = (llpython[1])/78 - 4.5
-                oldty = ((llpython[2])/78 - 3.3) * 1.5
-                oldtotal = abs(oldtx) + abs(oldty)
+                
                 
 
                 # Update llpython and largest_contour if this is the largest valid contour
-                if total < oldtotal:
-                    
-                    largest_area = area
-                    largest_contour = sep_contour
-                    llpython = [1, center[0], center[1], angle, len(yellow_contours), area, 0, 0]
-
+            
         # Draw all valid contours and their info
+        newpython = []
         for contour_info in valid_contours:
+            place = 0
+            newercenter = get_ground_coordinates(contour_info['center'][1],contour_info['center'][0])
+            thingy = [newercenter[0],  newercenter[1], contour_info['angle']]
+            try:
+                for i in newpython:
+                    if abs(i[0]) < abs(newercenter[0]):
+                        place += 1
+                    else:
+                        break
+                newpython.insert(int(place), thingy)
+            except Exception as e:
+                newpython.insert(int(place), thingy)
+
             cv2.drawContours(frame, [contour_info['contour']], -1, (0, 255, 0), 2)
-            draw_info(frame, "Yellow", contour_info['angle'], contour_info['center'], 
+            draw_info(frame, "Yellow", contour_info['angle'], contour_info['center'], newercenter[0], newercenter[1], 
                      contour_info['index'] + 1, contour_info['area'])
 
         #cv2.imshow('15. Contours', contour_frame)
         #cv2.imshow('16. Final Output', frame)
-        return largest_contour, frame, llpython
+        newerpython = []
+        for i in newpython:
+            newerpython.append(i[0])
+            newerpython.append(i[1])
+            newerpython.append(i[2])
+        return largest_contour, frame, newerpython
 
     except Exception as e:
         print(f"Error: {str(e)}")
