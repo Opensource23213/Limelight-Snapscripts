@@ -63,7 +63,7 @@ public class CleanCode extends LinearOpMode {
 
         // Constants for filtering contours
         public static final double SMALL_CONTOUR_AREA = 100;
-
+        public List<Double> newerpython = new ArrayList<>();
         // Minimum average brightness threshold (0-255)
         public static final double MIN_BRIGHTNESS_THRESHOLD = 0;
         public static final double hue_low = 0;
@@ -343,7 +343,6 @@ public class CleanCode extends LinearOpMode {
             Mat yellowMask = new Mat();
             Mat contourFrame = frame.clone(); // For drawing
             List<MatOfPoint> separatedContours;
-            List<Double> newerpython = new ArrayList<>();
 
             try {
                 Imgproc.cvtColor(frame, hsv, Imgproc.COLOR_BGR2HSV);
