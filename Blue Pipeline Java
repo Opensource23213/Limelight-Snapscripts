@@ -84,19 +84,19 @@ public class VisionOpMode extends LinearOpMode {
         // Vertical position threshold (in pixels from bottom)
         public static final int VERTICAL_THRESHOLD = 800;
 
-        public static final double VERTICAL_ANGLE = 0;
-        public static final double HORIZONTAL_ANGLE = 0;
-        public static final double CAMERA_HEIGHT = 0;
-        public static final int IMAGE_WIDTH = 640;
-        public static final int IMAGE_HEIGHT = 480;
-        public static final double HFOV = 54.5;
-        public static final double VFOV = 42.0;
-        public static final double Camera_xOffset = 0;
-        public static final double Camera_yOffset = 0;
-        public static final double Max_x = 99;
-        public static final double Min_x = 99;
-        public static final double Max_y = 99;
-        public static final double Min_y = 0;
+        public static final double VERTICAL_ANGLE = 0; // degrees downward from horizontal (subtract from 90 if it doesn't work)
+        public static final double HORIZONTAL_ANGLE = 0; // degrees right
+        public static final double CAMERA_HEIGHT = 0; // inches/meters/millimeters (doesn't matter, either one works)
+        public static final int IMAGE_WIDTH = 640; // pixels (standard for limelight)
+        public static final int IMAGE_HEIGHT = 480; // pixels (standard for limelight)
+        public static final double HFOV = 54.5; //# degrees (standard for limelight)
+        public static final double VFOV = 42.0; //# degrees (standard for limelight)
+        public static final double Camera_xOffset = 0; //# left is positive
+        public static final double Camera_yOffset = 0; //# forward is positive
+        public static final double Max_x = 99; //# furthest left you want to see in inches/meters/millimeters
+        public static final double Min_x = 99; //# furthest right you want to see in inches/meters/millimeters
+        public static final double Max_y = 99; //# furthest forward you want to see in inches/meters/millimeters
+        public static final double Min_y = 0; //# furthest back you want to see in inches/meters/millimeters
 
         // Outputs / State from last frame
         public List<ContourInfo> validContours = new ArrayList<>();
