@@ -346,22 +346,14 @@ public class CleanCode extends LinearOpMode {
             List<Double> newerpython = new ArrayList<>();
 
             try {
-                // 1. Color Conversion and Masking
                 Imgproc.cvtColor(frame, hsv, Imgproc.COLOR_BGR2HSV);
                 Imgproc.GaussianBlur(hsv, hsvDenoised, new Size(5, 5), 0);
 
-                // DEBUG: use wide range for testing
                 Core.inRange(hsvDenoised, HSV_YELLOW_LOWER, HSV_YELLOW_UPPER, yellowMask);
-                //Core.inRange(hsvDenoised, new Scalar(0, 50, 50), new Scalar(180, 255, 255), yellowMask);
 
                 Imgproc.erode(yellowMask, yellowMask, Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3)));
 
-                // DEBUG: Visual check of mask
-                // Mat debugMask = new Mat();
-                // Imgproc.cvtColor(yellowMask, debugMask, Imgproc.COLOR_GRAY2RGB);
-                // return debugMask;
 
-                // 2. Contour Detection
                 List<MatOfPoint> contours = new ArrayList<>();
                 Mat hierarchy = new Mat();
                 Imgproc.findContours(yellowMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
@@ -401,12 +393,10 @@ public class CleanCode extends LinearOpMode {
 
                         double angle = calculateAngle(sepContour);
 
-                        // 3. Add to list
                         validContours.add(new ContourInfo(sepContour, center, angle, area, i));
                     }
                 }
 
-                // 4. Sorting and Drawing
                 List<double[]> newpython = new ArrayList<>();
                 for (ContourInfo contourInfo : validContours) {
                     double[] thingy = {contourInfo.center.x, contourInfo.center.y, contourInfo.angle};
@@ -415,7 +405,6 @@ public class CleanCode extends LinearOpMode {
                     groundCoords[0] += Camera_xOffset;
                     double[] adjusted = new double[]{groundCoords[0], groundCoords[1], contourInfo.angle};
 
-                    // Sorted insert
                     int place = 0;
                     for (int j = 0; j < newpython.size(); j++) {
                         if (newpython.get(j)[1] < adjusted[1]) place++;
@@ -423,7 +412,6 @@ public class CleanCode extends LinearOpMode {
                     }
                     newpython.add(place, adjusted);
 
-                    // DRAW CONTOUR AND INFO
                     Imgproc.drawContours(contourFrame, Collections.singletonList(contourInfo.contour), -1, new Scalar(0, 255, 0), 2);
                     drawInfo(contourFrame, "Block", contourInfo.angle, contourInfo.center, groundCoords[0], groundCoords[1], contourInfo.index + 1, contourInfo.area);
                 }
