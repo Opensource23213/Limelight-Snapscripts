@@ -51,8 +51,9 @@ public class CleanCode extends LinearOpMode {
         while (opModeIsActive()) {
             // Example usage: you can get info from pipeline's public fields here
 
-            telemetry.addData("Largest Contour Area", pipeline.largestArea);
-            telemetry.addData("Valid Contours Found", pipeline.validContours.size());
+            telemetry.addData("Closest block: X", pipeline.newerpython.get(0));
+            telemetry.addData("Closest block: Y", pipeline.newerpython.get(1));
+            telemetry.addData("Closest block: Angle", pipeline.newerpython.get(2));
             telemetry.update();
             sleep(50);
         }
@@ -409,6 +410,7 @@ public class CleanCode extends LinearOpMode {
                         if (newpython.get(j)[1] < adjusted[1]) place++;
                         else break;
                     }
+                    if(adjusted[0] > Min_x && adjusted[0] < Max_x && adjusted[1] > Min_y && adjusted[1] < Max_y)
                     newpython.add(place, adjusted);
 
                     Imgproc.drawContours(contourFrame, Collections.singletonList(contourInfo.contour), -1, new Scalar(0, 255, 0), 2);
