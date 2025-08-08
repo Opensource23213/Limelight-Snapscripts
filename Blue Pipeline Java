@@ -1,0 +1,401 @@
+package org.firstinspires.ftc.teamcode.drive.opmode;
+
+import static org.firstinspires.ftc.teamcode.drive.opmode.VisionOpMode.VisionPipeline.*;
+
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+
+import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
+import org.opencv.core.*;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.imgproc.Moments;
+import org.openftc.easyopencv.*;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+@TeleOp(name="VisionOpMode", group="Vision")
+public class VisionOpMode extends LinearOpMode {
+
+    OpenCvCamera camera;
+    VisionPipeline pipeline;
+
+    @Override
+    public void runOpMode() {
+
+        int cameraMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
+                "cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
+        camera = OpenCvCameraFactory.getInstance().createWebcam(
+                hardwareMap.get(WebcamName.class, "Webcam 1"), cameraMonitorViewId);
+
+        pipeline = new VisionPipeline();
+        camera.setPipeline(pipeline);
+
+        camera.openCameraDeviceAsync(new OpenCvCamera.AsyncCameraOpenListener() {
+            @Override
+            public void onOpened() {
+                camera.startStreaming(VisionPipeline.IMAGE_WIDTH, VisionPipeline.IMAGE_HEIGHT, OpenCvCameraRotation.UPRIGHT);
+            }
+
+            @Override
+            public void onError(int errorCode) {
+                telemetry.addData("Camera Error", errorCode);
+                telemetry.update();
+            }
+        });
+
+        waitForStart();
+
+        while (opModeIsActive()) {
+            // Example usage: you can get info from pipeline's public fields here
+
+            telemetry.addData("Largest Contour Area", pipeline.largestArea);
+            telemetry.addData("Valid Contours Found", pipeline.validContours.size());
+            telemetry.update();
+
+            sleep(50);
+        }
+
+        camera.stopStreaming();
+    }
+
+    public class VisionPipeline extends OpenCvPipeline {
+
+        // Constants for filtering contours
+        public static final double SMALL_CONTOUR_AREA = 2000;
+
+        // Minimum average brightness threshold (0-255)
+        public static final double MIN_BRIGHTNESS_THRESHOLD = 0;
+
+        // Color detection ranges for yellow in HSV
+        public final Scalar HSV_YELLOW_LOWER = new Scalar(81, 116, 0);
+        public final Scalar HSV_YELLOW_UPPER = new Scalar(255, 255, 168);
+
+        // Edge detection parameters - initial values
+        public static final int BLUR_SIZE = 17;
+        public static final int SOBEL_KERNEL = 3;
+
+        // Aspect ratio range for contour filtering
+        public static final double MIN_ASPECT_RATIO = 1.0;
+        public static final double MAX_ASPECT_RATIO = 2.5;
+
+        // Vertical position threshold (in pixels from bottom)
+        public static final int VERTICAL_THRESHOLD = 800;
+
+        public static final double VERTICAL_ANGLE = 0;
+        public static final double HORIZONTAL_ANGLE = 0;
+        public static final double CAMERA_HEIGHT = 0;
+        public static final int IMAGE_WIDTH = 640;
+        public static final int IMAGE_HEIGHT = 480;
+        public static final double HFOV = 54.5;
+        public static final double VFOV = 42.0;
+        public static final double Camera_xOffset = 0;
+        public static final double Camera_yOffset = 0;
+        public static final double Max_x = 99;
+        public static final double Min_x = 99;
+        public static final double Max_y = 99;
+        public static final double Min_y = 0;
+
+        // Outputs / State from last frame
+        public List<ContourInfo> validContours = new ArrayList<>();
+        public double largestArea = 0;
+
+        // Helper class for contour info
+        public class ContourInfo {
+            public MatOfPoint contour;
+            public Point center;
+            public double angle;
+            public double area;
+            public int index;
+
+            public ContourInfo(MatOfPoint contour, Point center, double angle, double area, int index) {
+                this.contour = contour;
+                this.center = center;
+                this.angle = angle;
+                this.area = area;
+                this.index = index;
+            }
+        }
+
+        // Converts pixel (x_pix, y_pix) to ground coordinates relative to camera
+        public double[] pixelToGroundCoords(double x_pix, double y_pix) {
+
+            double fx = IMAGE_WIDTH / (2.0 * Math.tan(Math.toRadians(HFOV / 2.0)));
+            double fy = IMAGE_HEIGHT / (2.0 * Math.tan(Math.toRadians(VFOV / 2.0)));
+            double cx = IMAGE_WIDTH / 2.0;
+            double cy = IMAGE_HEIGHT / 2.0;
+
+            double x_cam = (x_pix - cx) / fx;
+            double y_cam = (y_pix - cy) / fy;
+            double z_cam = 1.0;
+
+            double norm = Math.sqrt(x_cam * x_cam + y_cam * y_cam + z_cam * z_cam);
+            x_cam /= norm;
+            y_cam /= norm;
+            z_cam /= norm;
+
+            double pitch = Math.toRadians(VERTICAL_ANGLE);
+            double yaw = Math.toRadians(HORIZONTAL_ANGLE);
+
+            // Rotation around X (pitch)
+            double y_rot = y_cam * Math.cos(pitch) - z_cam * Math.sin(pitch);
+            double z_rot = y_cam * Math.sin(pitch) + z_cam * Math.cos(pitch);
+
+            // Rotation around Y (yaw)
+            double x_world = x_cam * Math.cos(yaw) + z_rot * Math.sin(yaw);
+            double y_world = y_rot;
+            double z_world = -x_cam * Math.sin(yaw) + z_rot * Math.cos(yaw);
+
+            double t = -CAMERA_HEIGHT / z_world;
+
+            double x_ground = t * x_world;
+            double y_ground = t * y_world;
+
+            // Unrotate yaw
+            double X_corrected = x_ground * Math.cos(-yaw) + z_world * Math.sin(-yaw);
+            double Y_corrected = y_ground;
+
+            return new double[]{X_corrected, Y_corrected};
+        }
+
+        // Calculate angle of contour using fitEllipse
+        public double calculateAngle(MatOfPoint contour) {
+            if (contour.toArray().length < 5) {
+                return 0;
+            }
+            MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
+            RotatedRect ellipse = Imgproc.fitEllipse(contour2f);
+            return ellipse.angle;
+        }
+
+        // Draw info text and lines on frame
+        public void drawInfo(Mat image, String color, double angle, Point center, double centerx, double centery, int index, double area) {
+            Imgproc.putText(image, "#" + index + ": " + color, new Point(center.x - 40, center.y - 60), Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(0, 255, 0), 2);
+            Imgproc.putText(image, String.format("Angle: %.2f", angle), new Point(center.x - 40, center.y - 40), Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(0, 255, 0), 2);
+            Imgproc.putText(image, String.format("Center: %.2f %.2f", centerx, centery), new Point(center.x - 40, center.y - 20), Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(0, 255, 0), 2);
+            Imgproc.circle(image, center, 5, new Scalar(0, 255, 0), -1);
+            Point lineEnd = new Point(center.x + 50 * Math.cos(Math.toRadians(90 - angle)),
+                    center.y - 50 * Math.sin(Math.toRadians(90 - angle)));
+            Imgproc.line(image, center, lineEnd, new Scalar(0, 255, 0), 2);
+        }
+
+        // Separate touching contours (approximated)
+        public List<MatOfPoint> separateTouchingContours(MatOfPoint contour, double minAreaRatio) {
+            Rect boundingRect = Imgproc.boundingRect(contour);
+            Mat mask = Mat.zeros(boundingRect.height, boundingRect.width, CvType.CV_8UC1);
+            MatOfPoint shiftedContour = new MatOfPoint();
+            Point[] pts = contour.toArray();
+            Point[] shiftedPts = new Point[pts.length];
+            for (int i = 0; i < pts.length; i++) {
+                shiftedPts[i] = new Point(pts[i].x - boundingRect.x, pts[i].y - boundingRect.y);
+            }
+            shiftedContour.fromArray(shiftedPts);
+            List<MatOfPoint> contourList = new ArrayList<>();
+            List<MatOfPoint> resultContours = new ArrayList<>();
+
+            List<MatOfPoint> tmp = new ArrayList<>();
+            Imgproc.drawContours(mask, Arrays.asList(shiftedContour), -1, new Scalar(255), -1);
+
+            double originalArea = Imgproc.contourArea(contour);
+
+            Mat distTransform = new Mat();
+            Imgproc.distanceTransform(mask, distTransform, Imgproc.DIST_L2, 3);
+
+            for (double threshold = 0.10; threshold <= 0.90; threshold += 0.10) {
+                Mat thresh = new Mat();
+                Imgproc.threshold(distTransform, thresh, threshold * Core.minMaxLoc(distTransform).maxVal, 255, Imgproc.THRESH_BINARY);
+                thresh.convertTo(thresh, CvType.CV_8U);
+
+                List<MatOfPoint> contours = new ArrayList<>();
+                Mat hierarchy = new Mat();
+                Imgproc.findContours(thresh, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+                List<MatOfPoint> validContours = new ArrayList<>();
+                for (MatOfPoint c : contours) {
+                    if (Imgproc.contourArea(c) > originalArea * minAreaRatio) {
+                        validContours.add(c);
+                    }
+                }
+
+                if (validContours.size() > resultContours.size()) {
+                    resultContours = validContours;
+                }
+            }
+
+            if (!resultContours.isEmpty()) {
+                List<MatOfPoint> translatedContours = new ArrayList<>();
+                for (MatOfPoint c : resultContours) {
+                    Point[] points = c.toArray();
+                    for (Point p : points) {
+                        p.x += boundingRect.x;
+                        p.y += boundingRect.y;
+                    }
+                    MatOfPoint translated = new MatOfPoint();
+                    translated.fromArray(points);
+                    translatedContours.add(translated);
+                }
+                return translatedContours;
+            }
+            return Arrays.asList(contour);
+        }
+
+        // Process color mask to extract edges and contours
+        public class ProcessColorResult {
+            public List<MatOfPoint> contours;
+            public Mat hierarchy;
+            public Mat grayMasked;
+            public boolean isDebug;
+            public Mat debugInfo;
+
+            public ProcessColorResult(List<MatOfPoint> contours, Mat hierarchy, Mat grayMasked, boolean isDebug, Mat debugInfo) {
+                this.contours = contours;
+                this.hierarchy = hierarchy;
+                this.grayMasked = grayMasked;
+                this.isDebug = isDebug;
+                this.debugInfo = debugInfo;
+            }
+        }
+
+        public ProcessColorResult processColor(Mat frame, Mat mask) {
+            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
+            Mat maskedFrame = new Mat();
+            Core.bitwise_and(frame, frame, maskedFrame, mask);
+
+            Mat grayMasked = new Mat();
+            Imgproc.cvtColor(maskedFrame, grayMasked, Imgproc.COLOR_BGR2GRAY);
+
+            Mat grayBoosted = new Mat();
+            Core.addWeighted(grayMasked, 1.5, mask, 0.5, 0, grayBoosted);
+
+            Mat blurred = new Mat();
+            Imgproc.GaussianBlur(grayBoosted, blurred, new Size(3, 3), 0);
+
+            Mat sobelX = new Mat();
+            Mat sobelY = new Mat();
+            Imgproc.Sobel(blurred, sobelX, CvType.CV_32F, 1, 0, 1);
+            Imgproc.Sobel(blurred, sobelY, CvType.CV_32F, 0, 1, 1);
+
+            Mat magnitude = new Mat();
+            Core.magnitude(sobelX, sobelY, magnitude);
+
+            Core.normalize(magnitude, magnitude, 0, 255, Core.NORM_MINMAX);
+            Mat edges = new Mat();
+            Imgproc.threshold(magnitude, edges, 50, 255, Imgproc.THRESH_BINARY);
+
+            Core.bitwise_not(edges, edges);
+            Core.bitwise_and(edges, edges, edges, mask);
+            Imgproc.GaussianBlur(edges, edges, new Size(3, 3), 0);
+
+            List<MatOfPoint> contours = new ArrayList<>();
+            Mat hierarchy = new Mat();
+            Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+            return new ProcessColorResult(contours, hierarchy, grayMasked, false, null);
+        }
+
+        @Override
+        public Mat processFrame(Mat frame) {
+            try {
+                validContours.clear();
+                largestArea = 0;
+
+                Mat hsv = new Mat();
+                Imgproc.cvtColor(frame, hsv, Imgproc.COLOR_BGR2HSV);
+
+                Mat hsvDenoised = new Mat();
+                Imgproc.GaussianBlur(hsv, hsvDenoised, new Size(5, 5), 0);
+
+                Mat yellowMask = new Mat();
+                Core.inRange(hsvDenoised, HSV_YELLOW_LOWER, HSV_YELLOW_UPPER, yellowMask);
+                Imgproc.erode(yellowMask, yellowMask, Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3)));
+
+                ProcessColorResult colorResult = processColor(frame, yellowMask);
+                if (colorResult.isDebug) {
+                    return colorResult.debugInfo;
+                }
+
+                Mat contourFrame = frame.clone();
+
+                for (int i = 0; i < colorResult.contours.size(); i++) {
+                    MatOfPoint contour = colorResult.contours.get(i);
+
+                    if (Imgproc.contourArea(contour) < SMALL_CONTOUR_AREA) continue;
+
+                    RotatedRect rect = Imgproc.minAreaRect(new MatOfPoint2f(contour.toArray()));
+                    double width = Math.max(rect.size.width, rect.size.height);
+                    double height = Math.min(rect.size.width, rect.size.height);
+                    if (width == 0 || height == 0) continue;
+
+                    double aspectRatio = width / height;
+                    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+
+                    List<MatOfPoint> separatedContours = separateTouchingContours(contour, 2);
+
+                    for (MatOfPoint sepContour : separatedContours) {
+                        Mat mask = Mat.zeros(colorResult.grayMasked.size(), CvType.CV_8UC1);
+                        Imgproc.drawContours(mask, Collections.singletonList(sepContour), -1, new Scalar(255), -1);
+
+                        Scalar meanScalar = Core.mean(colorResult.grayMasked, mask);
+                        if (meanScalar.val[0] < MIN_BRIGHTNESS_THRESHOLD) continue;
+
+                        Moments M = Imgproc.moments(sepContour);
+                        if (M.get_m00() == 0) continue;
+
+                        Point center = new Point(M.get_m10() / M.get_m00(), M.get_m01() / M.get_m00());
+
+                        if (center.y < frame.height() - VERTICAL_THRESHOLD) continue;
+
+                        double angle = calculateAngle(sepContour);
+                        double area = Imgproc.contourArea(sepContour);
+
+                        validContours.add(new ContourInfo(sepContour, center, angle, area, i));
+                    }
+                }
+
+                List<double[]> newpython = new ArrayList<>();
+
+                for (ContourInfo contourInfo : validContours) {
+                    int place = 0;
+                    double[] newercenter = {contourInfo.center.y, contourInfo.center.x};
+                    double[] thingy = {newercenter[1], newercenter[0], contourInfo.angle};
+                    double[] groundCoords = pixelToGroundCoords(thingy[0], thingy[1]);
+                    groundCoords[1] += Camera_yOffset;
+                    groundCoords[0] += Camera_xOffset;
+                    thingy = new double[]{groundCoords[0], groundCoords[1], contourInfo.angle};
+
+                    for (int j = 0; j < newpython.size(); j++) {
+                        if (newpython.get(j)[1] < thingy[1]) {
+                            place++;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (groundCoords[1] >= Min_y && groundCoords[1] <= Max_y && groundCoords[0] <= Max_x && groundCoords[0] >= Min_x) {
+                        newpython.add(place, thingy);
+                    }
+
+                    if (groundCoords[1] >= Min_y && groundCoords[1] <= Max_y && groundCoords[0] <= Max_x && groundCoords[0] >= Min_x) {
+                        Imgproc.drawContours(frame, Collections.singletonList(contourInfo.contour), -1, new Scalar(0, 255, 0), 2);
+                        drawInfo(frame, "Block", contourInfo.angle, contourInfo.center, groundCoords[0], groundCoords[1], contourInfo.index + 1, contourInfo.area);
+                    }
+                }
+
+                // Output newerpython in a flat array form (like your python newerpython)
+                List<Double> newerpython = new ArrayList<>();
+                for (double[] arr : newpython) {
+                    for (double v : arr) newerpython.add(v);
+                }
+
+                // Optionally store or use newerpython as needed
+
+                return frame;
+            } catch (Exception e) {
+                telemetry.addData("Error", e.getMessage());
+                telemetry.update();
+                return frame;
+            }
+        }
+    }
+}
