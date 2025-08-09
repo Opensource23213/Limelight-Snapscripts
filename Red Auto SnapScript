@@ -56,13 +56,19 @@ MIN_ASPECT_RATIO = 0  # Minimum width/height ratio
 MAX_ASPECT_RATIO = 6.0  # Maximum width/height ratio
 
 
-VERTICAL_ANGLE = 34            # degrees downward from horizontal
-HORIZONTAL_ANGLE = 11         # degrees right
-CAMERA_HEIGHT = 17.25          # meters
-IMAGE_WIDTH = 640              # pixels
-IMAGE_HEIGHT = 480             # pixels
-HFOV = 54.5                    # degrees
-VFOV = 42.0                    # degrees
+VERTICAL_ANGLE = 0            # degrees downward from horizontal (subtract from 90 if it doesn't work)
+HORIZONTAL_ANGLE = 0         # degrees right
+CAMERA_HEIGHT = 0          # inches/meters/millimeters (doesn't matter, either one works)
+IMAGE_WIDTH = 640              # pixels (standard for limelight)
+IMAGE_HEIGHT = 480             # pixels (standard for limelight)
+HFOV = 54.5                    # degrees (standard for limelight)
+VFOV = 42.0                    # degrees (standard for limelight)
+Camera_xOffset = 0             # left is positive
+Camera_yOffset = 0             # forward is positive
+Max_x = 99                     # furthest left you want to see in inches/meters/millimeters
+Min_x = 99                     # furthest right you want to see in inches/meters/millimeters
+Max_y = 99                     # furthest forward you want to see in inches/meters/millimeters
+Min_y = 0                      # furthest back you want to see in inches/meters/millimeters
 
 def pixel_to_ground_coords(x_pix, y_pix):
     """
@@ -296,29 +302,23 @@ def runPipeline(frame, llrobot):
             newercenter = [contour_info['center'][1],contour_info['center'][0]]
             thingy = [newercenter[1],  newercenter[0], contour_info['angle']]
             ground_coords = pixel_to_ground_coords(thingy[0], thingy[1])
-            ground_coords[0] = ground_coords[0] + 4.35 - (.097 * (ground_coords[1] - 14.1))
-            time = 0
-            y_time = (ground_coords[1] - (8.8 - abs(ground_coords[0]))) * .21
-            x_time =  (8.3 - ground_coords[0]) * .125
-            if(x_time < y_time):
-                time = y_time
-            else:
-                time = x_time
-            thingy = [ground_coords[0], ground_coords[1], thingy[2], time]
+            ground_coords[1] = ground_coords[1] + Camera_yOffset
+            ground_coords[0] = ground_coords[0] + Camera_xOffset
+            thingy = [ground_coords[0], ground_coords[1], contour_info['angle']]
             try:
                 for i in newpython:
-                    if i[3] < thingy[3]:
+                    if i[1] < thingy[1]:
                         place += 1
                     else:
                         break
-                if ground_coords[1] > 8.8 - abs(ground_coords[0]) and ground_coords[1]<= 23 - abs(ground_coords[0]) and abs(ground_coords[0]) < 8.3:
+                if ground_coords[1] >= Min_y and ground_coords[1] <= Max_y and ground_coords[0] <= Max_x and ground_coords[0] >= Min_x:
                     newpython.insert(int(place), thingy)
             except Exception as e:
                 newpython.insert(int(place), thingy)
 
-            if ground_coords[1] > 8.8 - abs(ground_coords[0]) and ground_coords[1]<= 23 - abs(ground_coords[0]) and abs(ground_coords[0]) < 8.3:
+            if ground_coords[1] >= Min_y and ground_coords[1] <= Max_y and ground_coords[0] <= Max_x and ground_coords[0] >= Min_x:
                 cv2.drawContours(frame, [contour_info['contour']], -1, (0, 255, 0), 2)
-                draw_info(frame, "Yellow", thingy[3], contour_info['center'], ground_coords[0], ground_coords[1], 
+                draw_info(frame, "Block", thingy[3], contour_info['center'], ground_coords[0], ground_coords[1], 
                         contour_info['index'] + 1, contour_info['area'])
 
         #cv2.imshow('15. Contours', contour_frame)
