@@ -38,14 +38,14 @@ from collections import defaultdict
 # cv2.contourArea = track_opencv('contourArea')(cv2.contourArea)
 
 # Constants for filtering contours
-SMALL_CONTOUR_AREA = 3000
+SMALL_CONTOUR_AREA = 1000
 
 # Minimum average brightness threshold (0-255)
 MIN_BRIGHTNESS_THRESHOLD = 0
 
 # Color detection ranges for red in HSV
-HSV_RED_RANGE_1 = ([0, 60, 100], [10, 255, 255])  # Lower red range
-HSV_RED_RANGE_2 = ([170, 60, 100], [180, 255, 255])  # Upper red range
+HSV_RED_RANGE_1 = ([0, 50, 80], [10, 255, 255])  # Lower red range
+HSV_RED_RANGE_2 = ([170, 50, 80], [255, 255, 255])  # Upper red range
 
 # Edge detection parameters - initial values
 BLUR_SIZE = 17
@@ -55,19 +55,88 @@ SOBEL_KERNEL = 3
 MIN_ASPECT_RATIO = 0  # Minimum width/height ratio
 MAX_ASPECT_RATIO = 6.0  # Maximum width/height ratio
 
+
+VERTICAL_ANGLE = 34            # degrees downward from horizontal
+HORIZONTAL_ANGLE = 11         # degrees right
+CAMERA_HEIGHT = 17.25          # meters
+IMAGE_WIDTH = 640              # pixels
+IMAGE_HEIGHT = 480             # pixels
+HFOV = 54.5                    # degrees
+VFOV = 42.0                    # degrees
+
+def pixel_to_ground_coords(x_pix, y_pix):
+    """
+    Converts pixel (x_pix, y_pix) to (X, Y) in meters relative to the camera's forward direction.
+    - X: horizontal (left/right)
+    - Y: forward (away from camera)
+    """
+
+    # Step 1: Focal lengths in pixels
+    fx = IMAGE_WIDTH / (2 * math.tan(math.radians(HFOV) / 2))
+    fy = IMAGE_HEIGHT / (2 * math.tan(math.radians(VFOV) / 2))
+    cx = IMAGE_WIDTH / 2
+    cy = IMAGE_HEIGHT / 2
+
+    # Step 2: Ray in camera space (standard pinhole projection)
+    x_cam = (x_pix - cx) / fx     # right is positive
+    y_cam = (y_pix - cy) / fy     # down is positive
+    z_cam = 1.0                   # forward
+
+    ray = np.array([x_cam, y_cam, z_cam])
+    ray /= np.linalg.norm(ray)
+
+    # Step 3: Apply camera rotation (pitch first, then yaw)
+    pitch = math.radians(VERTICAL_ANGLE)     # tilt downward
+    yaw = math.radians(HORIZONTAL_ANGLE)     # turn right
+
+    # Rotation around X (pitch, downward tilt)
+    Rx = np.array([
+        [1, 0, 0],
+        [0, math.cos(pitch), -math.sin(pitch)],
+        [0, math.sin(pitch),  math.cos(pitch)]
+    ])
+
+    # Rotation around Y (yaw, horizontal turn right)
+    Ry = np.array([
+        [math.cos(yaw), 0, math.sin(yaw)],
+        [0, 1, 0],
+        [-math.sin(yaw), 0, math.cos(yaw)]
+    ])
+
+    ray_world = Ry @ (Rx @ ray)
+
+    # Step 4: Intersect ray with ground plane at Z = 0
+    origin = np.array([0.0, 0.0, CAMERA_HEIGHT])
+    dz = ray_world[2]
+    t = CAMERA_HEIGHT / dz * -1
+    point = origin + t * ray_world
+    # Step 5: Rotate point back to camera-forward axis (undo yaw)
+    # So X=left/right relative to camera forward, Y=forward
+    yaw_matrix_inv = np.array([
+        [math.cos(-yaw), 0, math.sin(-yaw)],
+        [0, 1, 0],
+        [-math.sin(-yaw), 0, math.cos(-yaw)]
+    ])
+    corrected_point = yaw_matrix_inv @ point
+
+    X_corrected = corrected_point[0]
+    Y_corrected = corrected_point[1]
+    return [X_corrected, Y_corrected]
+
+
 def calculate_angle(contour):
     if len(contour) < 5:
         return 0
     (x, y), (MA, ma), angle = cv2.fitEllipse(contour)
     return angle
 
-def draw_info(image, color, angle, center, index, area):
-    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-    cv2.putText(image, f"Area: {area:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-    cv2.circle(image, center, 5, (0, 0, 255), -1)
+def draw_info(image, color, angle, center, centerx, centery, index, area):
+    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"Center: {centerx:.2f} {centery:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.circle(image, center, 5, (0, 255, 0), -1)
     cv2.line(image, center, (int(center[0] + 50 * math.cos(math.radians(90 - angle))), 
-                             int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (0, 0, 255), 2)
+                             int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (0, 255, 0), 2)
 
 def separate_touching_contours(contour, min_area_ratio=2):
     x, y, w, h = cv2.boundingRect(contour)
@@ -122,9 +191,7 @@ def process_color(frame, mask):
     _, edges = cv2.threshold(magnitude, 50, 255, cv2.THRESH_BINARY) if 1 else magnitude
     #return pipeline_debug_return(edges)
 
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel) if 1 else edges
     #return pipeline_debug_return(edges)
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1) if 1 else edges
     #return pipeline_debug_return(edges)
     edges = cv2.bitwise_not(edges) if 1 else edges
     #return pipeline_debug_return(edges)
@@ -222,20 +289,47 @@ def runPipeline(frame, llrobot):
                 
 
                 # Update llpython and largest_contour if this is the largest valid contour
-                if total < oldtotal:
-                    largest_area = area
-                    largest_contour = sep_contour
-                    llpython = [1, center[0], center[1], angle, len(red_contours), area, 0, 0]
-
-        # Draw all valid contours and their info
+        newpython = []
+        servolist = []
         for contour_info in valid_contours:
-            cv2.drawContours(frame, [contour_info['contour']], -1, (0, 0, 255), 2)
-            draw_info(frame, "Red", contour_info['angle'], contour_info['center'], 
-                     contour_info['index'] + 1, contour_info['area'])
+            place = 0
+            newercenter = [contour_info['center'][1],contour_info['center'][0]]
+            thingy = [newercenter[1],  newercenter[0], contour_info['angle']]
+            ground_coords = pixel_to_ground_coords(thingy[0], thingy[1])
+            ground_coords[0] = ground_coords[0] + 4.35 - (.097 * (ground_coords[1] - 14.1))
+            time = 0
+            y_time = (ground_coords[1] - (8.8 - abs(ground_coords[0]))) * .21
+            x_time =  (8.3 - ground_coords[0]) * .125
+            if(x_time < y_time):
+                time = y_time
+            else:
+                time = x_time
+            thingy = [ground_coords[0], ground_coords[1], thingy[2], time]
+            try:
+                for i in newpython:
+                    if i[3] < thingy[3]:
+                        place += 1
+                    else:
+                        break
+                if ground_coords[1] > 8.8 - abs(ground_coords[0]) and ground_coords[1]<= 23 - abs(ground_coords[0]) and abs(ground_coords[0]) < 8.3:
+                    newpython.insert(int(place), thingy)
+            except Exception as e:
+                newpython.insert(int(place), thingy)
+
+            if ground_coords[1] > 8.8 - abs(ground_coords[0]) and ground_coords[1]<= 23 - abs(ground_coords[0]) and abs(ground_coords[0]) < 8.3:
+                cv2.drawContours(frame, [contour_info['contour']], -1, (0, 255, 0), 2)
+                draw_info(frame, "Yellow", thingy[3], contour_info['center'], ground_coords[0], ground_coords[1], 
+                        contour_info['index'] + 1, contour_info['area'])
 
         #cv2.imshow('15. Contours', contour_frame)
         #cv2.imshow('16. Final Output', frame)
-        return largest_contour, frame, llpython
+        newerpython = []
+        for i in newpython:
+            newerpython.append(i[0])
+            newerpython.append(i[1])
+            newerpython.append(i[2])
+    
+        return largest_contour, frame, newerpython
 
     except Exception as e:
         print(f"Error: {str(e)}")
