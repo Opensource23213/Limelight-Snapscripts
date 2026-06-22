@@ -38,99 +38,96 @@ from collections import defaultdict
 # cv2.contourArea = track_opencv('contourArea')(cv2.contourArea)
 
 # Constants for filtering contours
-SMALL_CONTOUR_AREA = 2000
+SMALL_CONTOUR_AREA = 400
 
 # Minimum average brightness threshold (0-255)
 MIN_BRIGHTNESS_THRESHOLD = 0
 
 # Color detection ranges for yellow in HSV
-HSV_YELLOW_RANGE = ([81, 116, 0], [255, 255, 168])
+HSV_YELLOW_RANGE = ([57, 81, 0], [179, 255, 255])
 
 # Edge detection parameters - initial values
 BLUR_SIZE = 17
 SOBEL_KERNEL = 3
 
 # Aspect ratio range for contour filtering
-MIN_ASPECT_RATIO = 1  # Minimum width/height ratio
-MAX_ASPECT_RATIO = 2.5  # Maximum width/height ratio
+MIN_ASPECT_RATIO = 0  # Minimum width/height ratio
+MAX_ASPECT_RATIO = 100.0  # Maximum width/height ratio
 
 # Vertical position threshold (in pixels from bottom)
 VERTICAL_THRESHOLD = 800  # Adjust this value as needed
+h_c = 5.5
 
-
-VERTICAL_ANGLE = 0            # degrees downward from horizontal (subtract from 90 if it doesn't work)
-HORIZONTAL_ANGLE = 0         # degrees right
-CAMERA_HEIGHT = 0          # inches/meters/millimeters (doesn't matter, either one works)
-IMAGE_WIDTH = 640              # pixels (standard for limelight)
-IMAGE_HEIGHT = 480             # pixels (standard for limelight)
-HFOV = 54.5                    # degrees (standard for limelight)
-VFOV = 42.0                    # degrees (standard for limelight)
-Camera_xOffset = 0             # left is positive
-Camera_yOffset = 0             # forward is positive
-Max_x = 99                     # furthest left you want to see in inches/meters/millimeters
-Min_x = 99                     # furthest right you want to see in inches/meters/millimeters
-Max_y = 99                     # furthest forward you want to see in inches/meters/millimeters
-Min_y = 0                      # furthest back you want to see in inches/meters/millimeters
-
-def pixel_to_ground_coords(x_pix, y_pix):
+robot_width = 6.4
+def get_distance_from_vertical_pixel(x_pix, h_c, vFoV=42.0, theta=0, R=480):
     """
-    Converts pixel (x_pix, y_pix) to (X, Y) in meters relative to the camera's forward direction.
-    - X: horizontal (left/right)
-    - Y: forward (away from camera)
+    Calculates the ground distance (y) from the camera to a point that appears
+    at vertical pixel position x_pix.
+
+    Parameters:
+    - x_pix (float): vertical pixel position (0 = top, R = bottom)
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees (default: 42.0)
+    - theta (float): camera tilt angle downward from horizontal (in degrees)
+    - R (int): vertical resolution in pixels (default: 480)
+
+    Returns:
+    - y (float): distance from camera to point on ground in meters
     """
+    # Compute vertical angle offset from the optical axis
+    angle_offset = ((x_pix - R / 2) / R) * vFoV
 
-    # Step 1: Focal lengths in pixels
-    fx = IMAGE_WIDTH / (2 * math.tan(math.radians(HFOV) / 2))
-    fy = IMAGE_HEIGHT / (2 * math.tan(math.radians(VFOV) / 2))
-    cx = IMAGE_WIDTH / 2
-    cy = IMAGE_HEIGHT / 2
+    # Total angle from horizontal to pixel ray
+    total_angle_deg = theta + angle_offset
 
-    # Step 2: Ray in camera space (standard pinhole projection)
-    x_cam = (x_pix - cx) / fx     # right is positive
-    y_cam = (y_pix - cy) / fy     # down is positive
-    z_cam = 1.0                   # forward
+    # Convert to radians and calculate distance
+    total_angle_rad = math.radians(total_angle_deg)
+    y = h_c / math.tan(total_angle_rad)
 
-    ray = np.array([x_cam, y_cam, z_cam])
-    ray /= np.linalg.norm(ray)
+    return y
 
-    # Step 3: Apply camera rotation (pitch first, then yaw)
-    pitch = math.radians(VERTICAL_ANGLE)     # tilt downward
-    yaw = math.radians(HORIZONTAL_ANGLE)     # turn right
 
-    # Rotation around X (pitch, downward tilt)
-    Rx = np.array([
-        [1, 0, 0],
-        [0, math.cos(pitch), -math.sin(pitch)],
-        [0, math.sin(pitch),  math.cos(pitch)]
-    ])
+def get_horizontal_displacement(x_pix_horizontal, y, hFoV=54.5, W=640):
+    """
+    Calculate horizontal ground displacement (X) from camera center line.
 
-    # Rotation around Y (yaw, horizontal turn right)
-    Ry = np.array([
-        [math.cos(yaw), 0, math.sin(yaw)],
-        [0, 1, 0],
-        [-math.sin(yaw), 0, math.cos(yaw)]
-    ])
+    Parameters:
+    - x_pix_horizontal (float): horizontal pixel position (0 = left, W = right)
+    - y (float): distance along ground straight ahead (from vertical calculation)
+    - hFoV (float): horizontal field of view in degrees (default 54.5)
+    - W (int): horizontal resolution in pixels (default 640)
 
-    ray_world = Ry @ (Rx @ ray)
+    Returns:
+    - X (float): horizontal displacement on ground in meters
+    """
+    angle_offset_deg = ((x_pix_horizontal - W / 2) / W) * hFoV
+    angle_offset_rad = math.radians(angle_offset_deg)
 
-    # Step 4: Intersect ray with ground plane at Z = 0
-    origin = np.array([0.0, 0.0, CAMERA_HEIGHT])
-    dz = ray_world[2]
-    t = CAMERA_HEIGHT / dz * -1
-    point = origin + t * ray_world
-    # Step 5: Rotate point back to camera-forward axis (undo yaw)
-    # So X=left/right relative to camera forward, Y=forward
-    yaw_matrix_inv = np.array([
-        [math.cos(-yaw), 0, math.sin(-yaw)],
-        [0, 1, 0],
-        [-math.sin(-yaw), 0, math.cos(-yaw)]
-    ])
-    corrected_point = yaw_matrix_inv @ point
+    X = y * math.tan(angle_offset_rad)
+    return X
 
-    X_corrected = corrected_point[0]
-    Y_corrected = corrected_point[1]
-    return [X_corrected, Y_corrected]
 
+def get_ground_coordinates(x_pix_vertical, x_pix_horizontal, h_c=h_c, vFoV=42.0, theta=0.0, R=480, hFoV=54.5, W=640):
+    """
+    Calculate the 2D ground coordinates (X, Y) from pixel coordinates.
+
+    Parameters:
+    - x_pix_vertical (float): vertical pixel coordinate
+    - x_pix_horizontal (float): horizontal pixel coordinate
+    - h_c (float): camera height above ground in meters
+    - vFoV (float): vertical field of view in degrees
+    - theta (float): camera tilt angle downward from vertical in degrees
+    - R (int): vertical resolution in pixels
+    - hFoV (float): horizontal field of view in degrees
+    - W (int): horizontal resolution in pixels
+
+    Returns:
+    - (X, Y): tuple of floats representing ground coordinates in meters
+    """
+    y = get_distance_from_vertical_pixel(x_pix_vertical, h_c, vFoV, theta, R)
+    X = get_horizontal_displacement(x_pix_horizontal, y, hFoV, W)
+    new_center = (X, y)
+    return new_center
 def calculate_angle(contour):
     if len(contour) < 5:
         return 0
@@ -138,9 +135,9 @@ def calculate_angle(contour):
     return angle
 
 def draw_info(image, color, angle, center, centerx, centery, index, area):
-    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    cv2.putText(image, f"Center: {centerx:.2f} {centery:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(image, f"#{index}: {color}", (center[0] - 40, center[1] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    cv2.putText(image, f"Angle: {angle:.2f}", (center[0] - 40, center[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    cv2.putText(image, f"Center: {centerx:.2f} {centery:.2f}", (center[0] - 40, center[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
     cv2.circle(image, center, 5, (0, 255, 0), -1)
     cv2.line(image, center, (int(center[0] + 50 * math.cos(math.radians(90 - angle))), 
                              int(center[1] - 50 * math.sin(math.radians(90 - angle)))), (0, 255, 0), 2)
@@ -185,7 +182,7 @@ def process_color(frame, mask):
     #return pipeline_debug_return(gray_masked)
     gray_boosted = cv2.addWeighted(gray_masked, 1.5, mask, 0.5, 0)  if 0 else gray_masked
     #return pipeline_debug_return(gray_boosted)
-    blurred = cv2.GaussianBlur(gray_boosted, (3, 3), 0) if 1 else gray_boosted
+    blurred = cv2.GaussianBlur(gray_boosted, (3, 5), 0) if 1 else gray_boosted
     #return pipeline_debug_return(blurred)
 
     sobelx = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=1)
@@ -195,10 +192,11 @@ def process_color(frame, mask):
     magnitude = np.uint8(magnitude * 255 / np.max(magnitude))
     #return pipeline_debug_return(magnitude)
 
-    _, edges = cv2.threshold(magnitude, 50, 255, cv2.THRESH_BINARY) if 1 else magnitude
+    _, edges = cv2.threshold(magnitude, 40, 255, cv2.THRESH_BINARY) if 1 else magnitude
     #return pipeline_debug_return(edges)
 
     #return pipeline_debug_return(edges)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1) if 1 else edges
     #return pipeline_debug_return(edges)
     edges = cv2.bitwise_not(edges) if 1 else edges
     #return pipeline_debug_return(edges)
@@ -294,39 +292,65 @@ def runPipeline(frame, llrobot):
             
         # Draw all valid contours and their info
         newpython = []
-        servolist = []
         for contour_info in valid_contours:
-            place = 0
-            newercenter = [contour_info['center'][1],contour_info['center'][0]]
-            thingy = [newercenter[1],  newercenter[0], contour_info['angle']]
-            ground_coords = pixel_to_ground_coords(thingy[0], thingy[1])
-            ground_coords[1] = ground_coords[1] + Camera_yOffset
-            ground_coords[0] = ground_coords[0] + Camera_xOffset
-            thingy = [ground_coords[0], ground_coords[1], contour_info['angle']]
-            try:
-                for i in newpython:
-                    if i[1] < thingy[1]:
-                        place += 1
-                    else:
-                        break
-                if ground_coords[1] >= Min_y and ground_coords[1] <= Max_y and ground_coords[0] <= Max_x and ground_coords[0] >= Min_x:
-                    newpython.insert(int(place), thingy)
-            except Exception as e:
-                newpython.insert(int(place), thingy)
+            if contour_info['center'][1] > 100:
+                place = 0
+                newercenter = get_ground_coordinates(contour_info['center'][1],contour_info['center'][0])
+                thingy = [newercenter[0],  newercenter[1], contour_info['angle'], contour_info['area']]
 
-            if ground_coords[1] >= Min_y and ground_coords[1] <= Max_y and ground_coords[0] <= Max_x and ground_coords[0] >= Min_x:
+                try:
+                    for i in newpython:
+                        if i[0] < thingy[0]:
+                            place += 1
+                        else:
+                            break
+                    newpython.insert(int(place), thingy)
+                except Exception as e:
+                    newpython.insert(int(place), thingy)
+
                 cv2.drawContours(frame, [contour_info['contour']], -1, (0, 255, 0), 2)
-                draw_info(frame, "Block", thingy[3], contour_info['center'], ground_coords[0], ground_coords[1], 
+                draw_info(frame, "Blue", contour_info['angle'], contour_info['center'], newercenter[0] + robot_width, newercenter[1], 
                         contour_info['index'] + 1, contour_info['area'])
 
         #cv2.imshow('15. Contours', contour_frame)
         #cv2.imshow('16. Final Output', frame)
         newerpython = []
+        regions = []
+        area = 0
+        balls = 0
+        mean = 0
+        added_balls = 0;
         for i in newpython:
-            newerpython.append(i[0])
-            newerpython.append(i[1])
-            newerpython.append(i[2])
-    
+            if(len(regions) == 0):
+                regions.append([i[0]])
+                continue
+            for region in regions:
+                found = False
+                for ball in region:
+                    if(abs(i[0] - ball) < 7):
+                        regions[regions.index(region)].append(i[0])
+                        found = True
+                        break
+            if(not found):
+                regions.append([i[0]])
+        big_region = []
+        small_region = []
+        if(len(regions) > 0):
+            for l in regions:
+                if(len(l) > len(big_region)):
+                    big_region = l
+                else:
+                    small_region = l
+        if len(big_region) > 0:
+            mean = sum(big_region) / len(big_region)
+        else:
+            mean = 0
+        if len(small_region) > 0:
+            mean2 = sum(small_region) / len(small_region)
+        else:
+            mean2 = 0
+        balls = len(big_region)
+        newerpython = [mean, balls, mean2]
         return largest_contour, frame, newerpython
 
     except Exception as e:
